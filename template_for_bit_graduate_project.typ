@@ -66,20 +66,49 @@
   show heading: it => {
     // 基础字体设置
     set text(font: "SimHei", weight: "bold", tracking: 0pt) // 恢复默认字间距
-    set par(leading: 0.5em, first-line-indent: 0pt) // 标题不缩进
+    // 标题行距：1.5倍 (leading = 0.5em，因为 1em + 0.5em = 1.5em)
+    set par(leading: 0.5em, first-line-indent: 0pt)
 
     // 如果是一级标题，重置公式编号
     if it.level == 1 {
       counter(math.equation).update(0)
     }
 
-    // 根据层级设置不同的属性
+    // 尺寸定义
+    let size-l1 = 16pt // 三号
+    let size-l2 = 14pt // 四号
+    let size-l3 = 12pt // 小四
+
+    // 间距计算逻辑：
+    // 根据用户要求："行距是相对正常行距来说的...正常行距是22磅...标题的行距是在正常行距上相加的"
+    // 定义基准：
+    // 1. 正常行高 (Line Height) = 22pt
+    // 2. 正常字体 (Font Size) = 12pt
+    // 3. 基础行间距 (Base Leading) = 22pt - 12pt = 10pt (这是"0行"段后间距的视觉基准)
+
+    let base-leading = 10pt
+    let line-height = 22pt
+
+    // 二级/三级标题: 段后0行 -> 基础行间距 + 0 * 行高 = 10pt
+    let spacing-below-0 = base-leading
+    // 一级标题: 段后1行 -> 基础行间距 + 1 * 行高 = 32pt
+    // 注意：1.5倍行距的标题本身较高，但spacing-below是控制下文距离的，应保持一致。
+    let spacing-below-1 = base-leading + 1 * line-height
+
+    // 标题: 段前0.5行 -> 基础行间距 + 0.5 * 行高 = 21pt
+    // 注意：Typst block above 与上一段 below 取最大值(max)。
+    // 上一段通常 below 为 10pt。设置 above 为 21pt 可确保增加 11pt 的额外间距。
+    let spacing-above-05 = base-leading + 0.5 * line-height
+
     let (font-size, spacing-above, spacing-below, alignment) = if it.level == 1 {
-      (16pt, 0.5em, 1em, center) // 一级：三号，段前0.5行，段后1行，居中
+      // 一级：段前0.5行，段后1行
+      (size-l1, spacing-above-05, spacing-below-1, center)
     } else if it.level == 2 {
-      (14pt, 0.5em, 0em, left) // 二级：四号，段前0.5行，段后0行，左对齐
+      // 二级：段前0.5行，段后0行
+      (size-l2, spacing-above-05, spacing-below-0, left)
     } else {
-      (12pt, 0.5em, 0em, left) // 三级：小四，段前0.5行，段后0行，左对齐
+      // 三级：段前0.5行，段后0行
+      (size-l3, spacing-above-05, spacing-below-0, left)
     }
 
     set text(size: font-size)
@@ -88,7 +117,7 @@
     // 构造最终的标题块
     block(
       above: spacing-above,
-      below: spacing-below + 0.75em, // 额外补偿一点行高带来的视觉差异，确保足够空隙
+      below: spacing-below,
       sticky: true,
       it,
     )
@@ -118,7 +147,7 @@
   set outline(indent: 1em) // 开启自动缩进，1em 表示缩进一个汉字宽度
 
   // 5. 图、表标号与格式
-  // 编号格式：按章依序 (1-1, 1-2)
+  // 编号格式：按章依序 (1-1)
   set figure(numbering: "1-1")
 
   // 全局图表样式
@@ -126,8 +155,11 @@
     set align(center)
     set text(font: "SimSun", size: 10.5pt) // 宋体，五号
 
-    // 图表与上下文之间各空一行 (正文行距 22pt)
-    block(above: 22pt, below: 22pt, it)
+    // 图表与上下文之间各空一行
+    // "空一行"通常指一个标准行高(22pt)。
+    // 但为了确保视觉上的"空一行"（即中间有一个空行的高度），通常需要 Base Leading + Line Height。
+    // 即 10pt (原有行距) + 22pt (空行) = 32pt。
+    block(above: 32pt, below: 32pt, it)
   }
 
   // 图像特定设置：图注在下 (默认)，前缀 "图"
