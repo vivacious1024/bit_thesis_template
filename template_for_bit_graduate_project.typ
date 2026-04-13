@@ -49,6 +49,11 @@
     first-line-indent: (amount: 2em, all: true), // 首行缩进，强制所有段落缩进
   )
 
+  // 列表格式设置
+  // 点排序 (list) 和数字排序 (enum) 整体缩进两格 (2em)，与段首缩进保持一致
+  set list(indent: 2em)
+  set enum(indent: 2em)
+
   // 4. 标题格式设置
   // 标题行距：1.5倍 (leading = 0.5em)
 

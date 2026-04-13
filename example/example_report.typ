@@ -45,6 +45,17 @@ $ E = m c^2 $
   caption: "测试表格",
 ) <tbl:test>
 
+在此处插入一个数字排序：
++ 第一项 the first item
++ 第二项 the second item
++ 第三项 the third item
+
+
+在此处再加上一个点排序：
+- 第一项 the first item
+- 第二项 the second item
+- 第三项 the third item
+
 == 实验结果
 
 这是实验结果章节的第一段。
