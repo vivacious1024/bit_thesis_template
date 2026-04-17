@@ -1,57 +1,58 @@
-#import "../template_for_bit_graduate_project.typ": project
+#import "../template_for_bit_graduate_project.typ": project, bit_three_line_table
 
 #show: project.with(
   title: "北京理工大学毕业设计排版测试",
   authors: ("张三",),
-  date: "2026年2月14日",
+  date: "2026年5月4日",
 )
 
 = 第一章 绪论
 
-这是第一章的第一段文字。根据修改后的模板设置，这段文字应该有两个字符的首行缩进。Typst 默认在标题后的首段不缩进，但我们通过插入隐形块的方式强制开启了缩进。@vaswani2017attention
+这是第一章的第一段文字。根据修改后的模板设置，这段文字应当有两个字符的首行缩进。@vaswani2017attention
 
-这是第一章的第二段文字。作为后续段落，它本来就会有缩进。我们需要确认所有段落的缩进是否一致。
+这是第一章的第二段文字。作为后续段落，它本来也会有缩进。我们需要确认所有段落的缩进是否一致。
 
 == 研究背景
 
-这是二级标题下的第一段文字。同样，这段文字也必须有两个字符的缩进。
+这是二级标题下的第一段文字。同样，这段文字也应当保持两个字符的首行缩进。
 
 === 具体背景
 
-这是三级标题下的第一段文字。测试三级标题后的缩进情况。
+这是三级标题下的第一段文字，用于测试三级标题后的排版与段落样式。
 
 = 第二章 关键技术
 
-这是第二章的第一段文字。再次确认一级标题后的首段缩进是否正常工作。
+这是第二章的第一段文字，再次确认一级标题后的首段缩进是否正常。
 
-在此处插入一个公式，测试公式编号是否正常：
+在此处插入一个公式，测试公式编号是否正确：
 $ E = m c^2 $
 
-在此处插入一个图表引用 @fig:test，测试图表编号。
+在此处插入一个图引用 @fig:test，测试图片编号：
 
 #figure(
   rect[这是一个示意图],
   caption: "测试图片",
 ) <fig:test>
 
-在此处插入一个表格引用 @tbl:test，测试表格编号。@knuth1984texbook
+在此处插入一个表格引用 @tbl:test，测试三线表编号与样式。@knuth1984texbook
 
-#figure(
-  table(
-    columns: (auto, auto),
-    [列1], [列2],
-    [数据A], [数据B],
+#bit_three_line_table(
+  columns: 3,
+  header: ([项目], [方法A], [方法B]),
+  body: (
+    [准确率], [90], [92],
+    [召回率], [88], [91],
+    [F1值], [89], [91.5],
   ),
-  caption: "测试表格",
+  caption: [测试三线表],
 ) <tbl:test>
 
-在此处插入一个数字排序：
+在此处插入一个数字列表：
 + 第一项 the first item
 + 第二项 the second item
 + 第三项 the third item
 
-
-在此处再加上一个点排序：
+在此处插入一个项目列表：
 - 第一项 the first item
 - 第二项 the second item
 - 第三项 the third item
