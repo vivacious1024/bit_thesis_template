@@ -1,16 +1,16 @@
-#import "../template_for_bit_graduate_project.typ": project, bit_three_line_table
+﻿#import "../template_for_bit_graduate_project.typ": project, bit_three_line_table
 
 #show: project.with(
   title: "北京理工大学毕业设计排版测试",
   authors: ("张三",),
-  date: "2026年5月4日",
+  date: "2026年4月20日",
 )
 
 = 第一章 绪论
 
 这是第一章的第一段文字。根据修改后的模板设置，这段文字应当有两个字符的首行缩进。@vaswani2017attention
 
-这是第一章的第二段文字。作为后续段落，它本来也会有缩进。我们需要确认所有段落的缩进是否一致。
+这是第一章的第二段文字。作为后续段落，它也会有缩进。我们需要确认所有段落的缩进是否一致。
 
 == 研究背景
 

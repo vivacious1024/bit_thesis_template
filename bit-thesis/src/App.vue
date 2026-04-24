@@ -1,591 +1,417 @@
-<script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, watchEffect } from 'vue'
-import { PDFDocument } from 'pdf-lib'
-
-const mode = ref('form')
-const parseNotice = ref('')
-const typstSource = ref('')
-
-const formDoc = reactive({
-  blocks: [
-    { id: crypto.randomUUID(), type: 'heading', level: 1, text: '论文标题' },
-    { id: crypto.randomUUID(), type: 'paragraph', text: '在填空模式中编辑正文，右键可插入段落、标题、图片、公式和三线表。' },
-  ],
-})
-
-const contextMenu = reactive({ visible: false, x: 0, y: 0, targetIndex: -1 })
-
-const coverFileName = ref('')
-const coverPdfBytes = ref(null)
-const coverStatus = ref('尚未选择封面文件。')
-
-const bodyPdfFileName = ref('')
-const bodyPdfBytes = ref(null)
-const bodyStatus = ref('尚未上传正文 PDF，将优先使用实时渲染结果。')
-
-const renderedBodyPdfBytes = ref(null)
-const previewPdfUrl = ref('')
-const previewStatus = ref('等待首次渲染...')
-const isRenderingPreview = ref(false)
-
-const mergeStatus = ref('')
-const isMerging = ref(false)
-
-let previewTimer = null
-let previewRequestSeq = 0
-
-const modeLabel = computed(() => (mode.value === 'form' ? '填空模式' : 'Typst 模式'))
-const generatedTypst = computed(() => (mode.value === 'typst' ? typstSource.value : buildTypstFromForm()))
-
-watchEffect(() => {
-  if (mode.value === 'form') typstSource.value = buildTypstFromForm()
-})
-
-watch(generatedTypst, () => schedulePreviewRender(), { immediate: true })
-
-function schedulePreviewRender() {
-  if (previewTimer) clearTimeout(previewTimer)
-  previewTimer = setTimeout(() => {
-    renderBodyPdfPreview()
-  }, 500)
-}
-
-async function renderBodyPdfPreview() {
-  const source = generatedTypst.value.trim()
-  if (!source) {
-    renderedBodyPdfBytes.value = null
-    previewStatus.value = '正文内容为空，无法渲染。'
-    return
-  }
-
-  const requestId = ++previewRequestSeq
-  isRenderingPreview.value = true
-  previewStatus.value = '正在实时渲染正文 PDF...'
-
-  try {
-    const response = await fetch('/api/body/render-typst', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body: source, title: '论文正文预览', author: 'bit-thesis 用户', date: '' }),
-    })
-
-    if (!response.ok) {
-      const message = await response.text()
-      throw new Error(message || `HTTP ${response.status}`)
-    }
-
-    const blob = await response.blob()
-    const bytes = await blob.arrayBuffer()
-    if (requestId !== previewRequestSeq) return
-
-    renderedBodyPdfBytes.value = bytes
-    if (previewPdfUrl.value) URL.revokeObjectURL(previewPdfUrl.value)
-    previewPdfUrl.value = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
-    previewStatus.value = '正文 PDF 已实时更新。'
-  } catch (error) {
-    if (requestId !== previewRequestSeq) return
-    previewStatus.value = `实时预览失败：${error.message}`
-  } finally {
-    if (requestId === previewRequestSeq) isRenderingPreview.value = false
-  }
-}
-
-function buildTypstFromForm() {
-  const lines = ['// 由 bit-thesis 编辑器自动生成', '']
-
-  for (const block of formDoc.blocks) {
-    if (block.type === 'paragraph') {
-      const paragraph = (block.text || '').trim()
-      if (paragraph) lines.push(paragraph, '')
-      continue
-    }
-    if (block.type === 'heading') {
-      const title = (block.text || '').trim() || '未命名标题'
-      const level = Math.max(1, Math.min(4, Number(block.level) || 1))
-      lines.push(`${'='.repeat(level)} ${title}`, '')
-      continue
-    }
-    if (block.type === 'image') {
-      const path = (block.path || '').trim() || 'images/placeholder.png'
-      const caption = (block.caption || '').trim() || '图片说明'
-      const width = (block.width || '').trim()
-      const widthExpr = width ? `, width: ${width}` : ''
-      lines.push(`#figure(image("${escapeString(path)}"${widthExpr}), caption: [${escapeContent(caption)}])`, '')
-      continue
-    }
-    if (block.type === 'equation') {
-      const equation = (block.text || '').trim() || 'a^2 + b^2 = c^2'
-      lines.push('$', equation, '$', '')
-      continue
-    }
-    if (block.type === 'table') {
-      lines.push(...buildThreeLineTableTypst(block), '')
-    }
-  }
-
-  return `${lines.join('\n').trim()}\n`
-}
-
-function buildThreeLineTableTypst(block) {
-  const headers = splitRow(block.headersText || '列1|列2|列3')
-  const bodyRows = splitRows(block.rowsText || '数据1|数据2|数据3\n数据4|数据5|数据6')
-  const columnCount = Math.max(1, Number(block.columns) || headers.length || Math.max(...bodyRows.map((row) => row.length), 1))
-
-  const normalizedHeaders = normalizeRow(headers, columnCount, '列')
-  const normalizedRows = bodyRows.length
-    ? bodyRows.map((row, rowIndex) => normalizeRow(row, columnCount, `数据${rowIndex + 1}-`))
-    : [Array.from({ length: columnCount }, (_, i) => `数据${i + 1}`)]
-
-  const totalRows = normalizedRows.length + 1
-  const caption = (block.caption || '').trim() || '三线表示例'
-  const marker = {
-    caption,
-    columns: columnCount,
-    headersText: normalizedHeaders.join('|'),
-    rowsText: normalizedRows.map((row) => row.join('|')).join('\n'),
-  }
-
-  const lines = [
-    `// BIT_TABLE_META ${JSON.stringify(marker)}`,
-    '#figure(',
-    '  table(',
-    `    columns: ${columnCount},`,
-    '    align: center + horizon,',
-    '    stroke: none,',
-    '    table.hline(y: 0, stroke: 1.5pt),',
-    '    table.hline(y: 1, stroke: 0.75pt),',
-    `    table.hline(y: ${totalRows}, stroke: 1.5pt),`,
-    `    table.header(${normalizedHeaders.map((cell) => `[${escapeContent(cell)}]`).join(', ')}),`,
-  ]
-
-  for (const row of normalizedRows) {
-    lines.push(`    ${row.map((cell) => `[${escapeContent(cell)}]`).join(', ')},`)
-  }
-
-  lines.push('  ),')
-  lines.push(`  caption: [${escapeContent(caption)}],`)
-  lines.push('  kind: table,')
-  lines.push(')')
-  return lines
-}
-
-function splitRow(text) {
-  return String(text)
-    .split('|')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0)
-}
-
-function splitRows(text) {
-  return String(text)
-    .split(/\r?\n/)
-    .map((line) => splitRow(line))
-    .filter((row) => row.length > 0)
-}
-
-function normalizeRow(row, targetLength, prefix) {
-  const next = row.slice(0, targetLength)
-  while (next.length < targetLength) next.push(`${prefix}${next.length + 1}`)
-  return next
-}
-
-function escapeString(input) {
-  return String(input).replaceAll('\\', '\\\\').replaceAll('"', '\\"')
-}
-
-function escapeContent(input) {
-  return String(input).replaceAll(']', '\\]').replaceAll('[', '\\[')
-}
-
-function switchMode(nextMode) {
-  if (nextMode === mode.value) return
-
-  if (nextMode === 'typst') {
-    typstSource.value = buildTypstFromForm()
-    parseNotice.value = '已将填空内容转换为 Typst。'
-    mode.value = 'typst'
-    return
-  }
-
-  const parsed = parseTypstToBlocks(typstSource.value)
-  formDoc.blocks = parsed
-  parseNotice.value = '已将 Typst 解析为可编辑结构。未识别语法会保留为段落。'
-  mode.value = 'form'
-}
-
-function parseTypstToBlocks(raw) {
-  const text = String(raw || '')
-  const lines = text.split(/\r?\n/)
-  const result = []
-  let i = 0
-
-  while (i < lines.length) {
-    const line = lines[i]
-    const trimmed = line.trim()
-
-    if (!trimmed) {
-      i += 1
-      continue
-    }
-
-    if (trimmed.startsWith('// BIT_TABLE_META')) {
-      const tableBlock = parseTableMarker(trimmed)
-      if (tableBlock) result.push(tableBlock)
-      i += 1
-      while (i < lines.length && !lines[i].trim().startsWith('#figure(')) i += 1
-      if (i < lines.length && lines[i].trim().startsWith('#figure(')) {
-        i += 1
-        while (i < lines.length && lines[i].trim() !== ')') i += 1
-      }
-      i += 1
-      continue
-    }
-
-    if (trimmed.startsWith('//')) {
-      i += 1
-      continue
-    }
-
-    const headingMatch = trimmed.match(/^(=+)\s+(.+)$/)
-    if (headingMatch) {
-      result.push({ id: crypto.randomUUID(), type: 'heading', level: Math.min(4, headingMatch[1].length), text: headingMatch[2].trim() })
-      i += 1
-      continue
-    }
-
-    if (trimmed.startsWith('#figure(image(')) {
-      const pathMatch = trimmed.match(/image\("([^"]+)"/)
-      const widthMatch = trimmed.match(/,\s*width:\s*([^)]+)\)/)
-      const captionMatch = trimmed.match(/caption:\s*\[(.*)\]/)
-      result.push({
-        id: crypto.randomUUID(),
-        type: 'image',
-        path: pathMatch?.[1] || '',
-        width: widthMatch?.[1]?.trim() || '',
-        caption: captionMatch?.[1]?.trim() || '',
-      })
-      i += 1
-      continue
-    }
-
-    if (trimmed === '$') {
-      const equationLines = []
-      i += 1
-      while (i < lines.length && lines[i].trim() !== '$') {
-        equationLines.push(lines[i])
-        i += 1
-      }
-      if (i < lines.length && lines[i].trim() === '$') i += 1
-      result.push({ id: crypto.randomUUID(), type: 'equation', text: equationLines.join('\n').trim() })
-      continue
-    }
-
-    const inlineEquation = trimmed.match(/^\$(.+)\$$/)
-    if (inlineEquation) {
-      result.push({ id: crypto.randomUUID(), type: 'equation', text: inlineEquation[1].trim() })
-      i += 1
-      continue
-    }
-
-    const paragraphLines = [line]
-    i += 1
-    while (i < lines.length) {
-      const nextTrim = lines[i].trim()
-      if (!nextTrim || nextTrim.startsWith('//') || nextTrim.startsWith('#figure(image(') || nextTrim === '$' || /^\$(.+)\$$/.test(nextTrim) || /^(=+)\s+(.+)$/.test(nextTrim)) break
-      paragraphLines.push(lines[i])
-      i += 1
-    }
-
-    result.push({ id: crypto.randomUUID(), type: 'paragraph', text: paragraphLines.join('\n').trim() })
-  }
-
-  if (!result.length) result.push({ id: crypto.randomUUID(), type: 'paragraph', text: '' })
-  return result
-}
-
-function parseTableMarker(line) {
-  const raw = line.replace('// BIT_TABLE_META', '').trim()
-  if (!raw) return { id: crypto.randomUUID(), type: 'table', ...defaultBlockPayload('table') }
-
-  try {
-    const parsed = JSON.parse(raw)
-    return {
-      id: crypto.randomUUID(),
-      type: 'table',
-      caption: parsed.caption || '三线表示例',
-      columns: Number(parsed.columns) || 3,
-      headersText: parsed.headersText || '列1|列2|列3',
-      rowsText: parsed.rowsText || '数据1|数据2|数据3\n数据4|数据5|数据6',
-    }
-  } catch (_error) {
-    return { id: crypto.randomUUID(), type: 'table', ...defaultBlockPayload('table') }
-  }
-}
-
-function addBlock(afterIndex, type, initial = {}) {
-  const block = { id: crypto.randomUUID(), type, ...defaultBlockPayload(type), ...initial }
-  const index = Math.max(-1, Math.min(afterIndex, formDoc.blocks.length - 1))
-  formDoc.blocks.splice(index + 1, 0, block)
-}
-
-function defaultBlockPayload(type) {
-  if (type === 'heading') return { level: 2, text: '新标题' }
-  if (type === 'image') return { path: '', caption: '', width: '80%' }
-  if (type === 'equation') return { text: '' }
-  if (type === 'table') {
-    return {
-      caption: '三线表示例',
-      columns: 3,
-      headersText: '列1|列2|列3',
-      rowsText: '数据1|数据2|数据3\n数据4|数据5|数据6',
-    }
-  }
-  return { text: '' }
-}
-
-function removeBlock(index) {
-  if (formDoc.blocks.length <= 1) return
-  formDoc.blocks.splice(index, 1)
-}
-
-function openContextMenu(event) {
-  if (mode.value !== 'form') return
-  event.preventDefault()
-  const blockEl = event.target?.closest?.('[data-block-index]')
-  const targetIndex = Number(blockEl?.dataset?.blockIndex ?? formDoc.blocks.length - 1)
-
-  contextMenu.visible = true
-  contextMenu.x = event.clientX
-  contextMenu.y = event.clientY
-  contextMenu.targetIndex = Number.isFinite(targetIndex) ? targetIndex : formDoc.blocks.length - 1
-}
-
-function closeContextMenu() {
-  contextMenu.visible = false
-}
-
-function onGlobalClick() {
-  if (contextMenu.visible) closeContextMenu()
-}
-
-function onKeydown(event) {
-  if (event.key === 'Escape') closeContextMenu()
-}
-
-function insertFromMenu(type, opts = {}) {
-  addBlock(contextMenu.targetIndex, type, opts)
-  closeContextMenu()
-}
-
-function blockTypeText(type) {
-  const map = { paragraph: '段落', heading: '标题', image: '图片', equation: '公式', table: '三线表' }
-  return map[type] || type
-}
-
-async function copyTypst() {
-  await navigator.clipboard.writeText(generatedTypst.value)
-  parseNotice.value = '已复制 Typst 源码。'
-}
-
-function downloadTypst() {
-  const blob = new Blob([generatedTypst.value], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'thesis.typ'
-  a.click()
-  URL.revokeObjectURL(url)
-  parseNotice.value = '已下载 thesis.typ。'
-}
-
-async function onCoverFileChange(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
-
-  coverFileName.value = file.name
-  mergeStatus.value = ''
-
-  const name = file.name.toLowerCase()
-  if (name.endsWith('.pdf')) {
-    coverPdfBytes.value = await file.arrayBuffer()
-    coverStatus.value = `已加载封面 PDF：${file.name}`
-    return
-  }
-
-  coverPdfBytes.value = null
-  coverStatus.value = '封面格式不支持，请上传 .pdf'
-}
-
-async function onBodyPdfChange(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
-
-  const name = file.name.toLowerCase()
-  if (!name.endsWith('.pdf')) {
-    bodyPdfBytes.value = null
-    bodyPdfFileName.value = ''
-    bodyStatus.value = '正文文件必须是 PDF。'
-    return
-  }
-
-  bodyPdfFileName.value = file.name
-  bodyPdfBytes.value = await file.arrayBuffer()
-  bodyStatus.value = `已加载外部正文 PDF：${file.name}`
-  mergeStatus.value = ''
-}
-
-async function mergeCoverAndBody() {
-  if (!coverPdfBytes.value) {
-    mergeStatus.value = '请先上传封面 PDF。'
-    return
-  }
-
-  const bodyBytes = bodyPdfBytes.value || renderedBodyPdfBytes.value
-  if (!bodyBytes) {
-    mergeStatus.value = '正文 PDF 不可用，请先等待实时渲染完成或手动上传正文 PDF。'
-    return
-  }
-
-  isMerging.value = true
-  mergeStatus.value = '正在合并 PDF...'
-
-  try {
-    const mergedDoc = await PDFDocument.create()
-    const coverDoc = await PDFDocument.load(coverPdfBytes.value)
-    const bodyDoc = await PDFDocument.load(bodyBytes)
-
-    const coverPages = await mergedDoc.copyPages(coverDoc, coverDoc.getPageIndices())
-    const bodyPages = await mergedDoc.copyPages(bodyDoc, bodyDoc.getPageIndices())
-
-    for (const page of coverPages) mergedDoc.addPage(page)
-    for (const page of bodyPages) mergedDoc.addPage(page)
-
-    const bytes = await mergedDoc.save()
-    downloadBytes(bytes, '论文完整版.pdf')
-    mergeStatus.value = '合并完成，已导出：论文完整版.pdf'
-  } catch (error) {
-    mergeStatus.value = `合并失败：${error.message}`
-  } finally {
-    isMerging.value = false
-  }
-}
-
-function downloadBytes(bytes, fileName) {
-  const blob = new Blob([bytes], { type: 'application/pdf' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-function clearCover() {
-  coverFileName.value = ''
-  coverPdfBytes.value = null
-  coverStatus.value = '已清空封面文件。'
-}
-
-function clearBodyPdf() {
-  bodyPdfFileName.value = ''
-  bodyPdfBytes.value = null
-  bodyStatus.value = '已清空外部正文 PDF，将回退到实时渲染结果。'
-}
-
-onMounted(() => {
-  document.addEventListener('click', onGlobalClick)
-  document.addEventListener('keydown', onKeydown)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', onGlobalClick)
-  document.removeEventListener('keydown', onKeydown)
-  if (previewTimer) clearTimeout(previewTimer)
-  if (previewPdfUrl.value) URL.revokeObjectURL(previewPdfUrl.value)
-})
-</script>
+﻿<script src="./app-logic.js"></script>
 
 <template>
-  <main class="editor-shell" @contextmenu="openContextMenu">
+  <main class="editor-shell" @contextmenu="openContextMenu" @paste="onEditorPlainTextPaste">
     <header class="topbar">
       <div class="mode-switch">
         <button class="chip" :class="{ active: mode === 'form' }" type="button" @click="switchMode('form')">填空模式</button>
         <button class="chip" :class="{ active: mode === 'typst' }" type="button" @click="switchMode('typst')">Typst 模式</button>
       </div>
-
       <div class="actions">
         <button class="text-btn" type="button" @click="copyTypst">复制 Typst</button>
         <button class="text-btn" type="button" @click="downloadTypst">下载 .typ</button>
       </div>
     </header>
 
+    <div class="title-editor">
+      <label for="thesis-title">论文标题（模板标题）</label>
+      <input id="thesis-title" v-model="thesisTitle" class="field" placeholder="请输入论文标题" />
+    </div>
+
     <p class="notice">当前：{{ modeLabel }}。{{ parseNotice || '已启用正文 PDF 实时预览。' }}</p>
+    <p v-if="textNormalizationSummary.count > 0" class="notice notice-warning">
+      检测到 {{ textNormalizationSummary.count }} 个可能导致字体回退的异常字符（例如：{{ textNormalizationSummary.samples.join('，') }}）。
+      <button type="button" class="text-btn notice-btn" @click="applyTextNormalizationFix">一键规范化</button>
+      <button type="button" class="text-btn notice-btn" @click="applyStrictFontUniformFix">强制统一字体</button>
+    </p>
+    <p class="notice" v-if="imageUploadStatus">{{ imageUploadStatus }}</p>
+
+    <section ref="assetsPanelRef" class="panel assets-panel" :class="{ collapsed: assetPanelCollapsed }">
+      <div class="assets-header">
+        <h2>&#39033;&#30446;&#32032;&#26448;&#24211;</h2>
+        <div class="assets-actions">
+          <button type="button" class="text-btn asset-toggle-btn" @click="toggleAssetPanel">{{ assetPanelCollapsed ? '展开素材库' : '收起素材库' }}</button>
+          <input v-model="assetLibraryKeyword" class="field assets-search" placeholder="&#25628;&#32034;&#32032;&#26448;&#21517;&#25110;&#36335;&#24452;" :disabled="assetPanelCollapsed" />
+          <button type="button" class="text-btn" @click="triggerAssetUpload" :disabled="assetPanelCollapsed">&#19978;&#20256;&#32032;&#26448;</button>
+          <button type="button" class="text-btn" :disabled="assetLibraryLoading || assetPanelCollapsed" @click="loadAssetLibrary">
+            {{ assetLibraryLoading ? '加载中...' : '刷新素材库' }}
+          </button>
+          <input ref="assetUploadInputRef" class="assets-upload-input" type="file" accept="image/*" @change="onAssetLibraryUpload" />
+        </div>
+      </div>
+      <p class="meta assets-summary">{{ assetPanelCollapsed ? `素材 ${assetLibrary.length} 项（已收起）` : assetLibraryStatus }}</p>
+      <div v-if="!assetPanelCollapsed && renamingAssetPath" class="asset-rename-external">
+        <p class="asset-rename-title">重命名素材：{{ renamingAssetPath }}</p>
+        <div class="asset-rename-row asset-rename-external-row">
+          <input
+            v-model="renamingAssetName"
+            class="field asset-rename-input asset-rename-input-external"
+            placeholder="请输入新文件名，例如 图1.png"
+            @keyup.enter="submitRenameCurrentAsset"
+            @keyup.esc="cancelRenameAsset"
+          />
+          <button type="button" class="text-btn asset-mini-btn" :disabled="renamingAssetLoading" @click="submitRenameCurrentAsset">
+            {{ renamingAssetLoading ? '保存中' : '保存' }}
+          </button>
+          <button type="button" class="text-btn asset-mini-btn" :disabled="renamingAssetLoading" @click="cancelRenameAsset">取消</button>
+        </div>
+      </div>
+      <div v-if="!assetPanelCollapsed" class="assets-content">
+        <div v-if="filteredAssetLibrary.length" class="assets-grid">
+          <article
+            v-for="asset in filteredAssetLibrary"
+            :key="asset.path"
+            class="asset-card"
+            @contextmenu.stop.prevent="(event) => openAssetContextMenu(event, asset)"
+          >
+            <img :src="asset.url" :alt="asset.name" class="asset-thumb" />
+            <div class="asset-title-row">
+              <p class="asset-name">{{ asset.name }}</p>
+            </div>
+            <p class="asset-meta">{{ formatAssetSize(asset.size) }} &middot; {{ formatAssetTime(asset.updatedAt) }}</p>
+            <p class="asset-path">{{ asset.path }}</p>
+            <p class="asset-hint">右键可操作</p>
+          </article>
+        </div>
+        <div v-else class="preview-empty assets-empty" @click="triggerAssetUpload">&#26242;&#26080;&#53305;&#37197;&#32032;&#26448;&#65292;&#28857;&#20987;&#27492;&#22788;&#21487;&#30452;&#25509;&#19978;&#20256;&#24182;&#32531;&#23384;&#12290;</div>
+      </div>
+    </section>
 
     <section class="workspace editor-preview-workspace">
       <article class="panel">
         <h2>正文编辑</h2>
-
-        <div v-if="mode === 'form'" class="form-editor">
-          <div v-for="(block, index) in formDoc.blocks" :key="block.id" class="block" :data-block-index="index">
+        <div v-if="mode === 'form'" ref="formEditorRef" class="form-editor">
+          <div
+            v-for="(block, index) in formDoc.blocks"
+            :key="block.id"
+            :ref="(el) => setBlockRef(block.id, el)"
+            class="block"
+            :class="{
+              'dragging-block': draggingBlockId === block.id,
+              'drag-over-before': draggingBlockId && dragInsertIndex === index,
+            }"
+            :data-block-index="index"
+            @dragover="(event) => onBlockDragOver(event, index)"
+            @drop="(event) => onBlockDrop(event, index)"
+          >
             <div class="block-title">
-              <span>{{ blockTypeText(block.type) }}</span>
-              <button type="button" class="danger" @click="removeBlock(index)">删除</button>
+              <div class="block-title-left">
+                <button
+                  type="button"
+                  class="drag-handle"
+                  draggable="true"
+                  title="拖拽调整顺序"
+                  @dragstart="(event) => onBlockDragStart(event, index)"
+                  @dragend="onBlockDragEnd"
+                >
+                  ☰
+                </button>
+                <span>{{ blockTypeText(block.type) }}</span>
+              </div>
+              <div class="block-title-actions">
+                <button
+                  v-if="block.type === 'text'"
+                  type="button"
+                  class="text-btn paragraph-toggle-btn"
+                  @click="toggleParagraphExpanded(block)"
+                >
+                  {{ isParagraphExpanded(block) ? '折叠' : '展开全文' }}
+                </button>
+                <button
+                  v-if="block.type !== 'typst'"
+                  type="button"
+                  class="text-btn paragraph-toggle-btn"
+                  @click="convertBlockToTypst(index)"
+                >
+                  转为 Typst
+                </button>
+                <button
+                  v-if="block.type === 'typst'"
+                  type="button"
+                  class="text-btn paragraph-toggle-btn"
+                  @click="convertTypstBlockToStructured(index)"
+                >
+                  转为结构化
+                </button>
+                <button type="button" class="danger" @click="removeBlock(index)">删除</button>
+              </div>
             </div>
 
-            <template v-if="block.type === 'paragraph'">
-              <textarea v-model="block.text" class="textarea" rows="4" placeholder="输入段落内容..." />
+            <template v-if="block.type === 'text'">
+              <textarea
+                v-model="block.text"
+                class="textarea"
+                :rows="getParagraphRows(block)"
+                :class="{ 'textarea-expanded': isParagraphExpanded(block) }"
+                placeholder="输入文本内容..."
+                @keydown="(event) => onParagraphKeydown(event, block, index)"
+                @paste="(event) => onParagraphPaste(event, block, index)"
+                @focus="(event) => onParagraphFocus(event, block)"
+                @click="(event) => onFormCursorActivity(event, block)"
+                @keyup="(event) => onFormCursorActivity(event, block)"
+                @input="(event) => onParagraphInput(event, block)"
+              />
+            </template>
+
+            <template v-else-if="block.type === 'typst'">
+              <textarea
+                v-model="block.code"
+                class="textarea source"
+                rows="8"
+                placeholder="在此直接编辑当前卡片对应的 Typst 源码..."
+                @click="(event) => onFormCursorActivity(event, block)"
+                @keyup="(event) => onFormCursorActivity(event, block)"
+                @input="(event) => onFormCursorActivity(event, block)"
+              />
             </template>
 
             <template v-else-if="block.type === 'heading'">
               <div class="row">
-                <select v-model.number="block.level" class="field small">
+                <select
+                  v-model.number="block.level"
+                  class="field small"
+                  @change="(event) => onFormCursorActivity(event, block)"
+                >
                   <option :value="1">一级标题</option>
                   <option :value="2">二级标题</option>
                   <option :value="3">三级标题</option>
                   <option :value="4">四级标题</option>
                 </select>
-                <input v-model="block.text" class="field" placeholder="标题内容" />
+                <input
+                  v-model="block.text"
+                  class="field"
+                  placeholder="标题内容"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
               </div>
             </template>
 
             <template v-else-if="block.type === 'image'">
               <div class="column">
-                <input v-model="block.path" class="field" placeholder="图片路径，例如 images/figure1.png" />
-                <input v-model="block.caption" class="field" placeholder="图片说明" />
-                <input v-model="block.width" class="field" placeholder="宽度，例如 80% 或 12cm" />
+                <div class="image-path-row">
+                  <input
+                    v-model="block.path"
+                    class="field image-path-input"
+                    placeholder="图片名称或路径，例如 xxx.png"
+                    @click="(event) => onFormCursorActivity(event, block)"
+                    @keyup="(event) => onFormCursorActivity(event, block)"
+                    @input="(event) => onFormCursorActivity(event, block)"
+                  />
+                  <button
+                    type="button"
+                    class="text-btn image-rename-btn"
+                    :disabled="!canRenameLinkedAsset(block) || renamingAssetLoading"
+                    :title="canRenameLinkedAsset(block) ? '重命名素材库图片（同步更新卡片）' : '当前图片未连接素材库，无法重命名'"
+                    @click="startRenameLinkedAsset(block)"
+                  >
+                    ✎
+                  </button>
+                </div>
+                <div v-if="isEditingLinkedAsset(block)" class="asset-rename-row">
+                  <input
+                    v-model="renamingAssetName"
+                    class="field asset-rename-input"
+                    placeholder="请输入新文件名"
+                    @keyup.enter="submitRenameLinkedAsset(block)"
+                    @keyup.esc="cancelRenameAsset"
+                  />
+                  <button
+                    type="button"
+                    class="text-btn asset-mini-btn"
+                    :disabled="renamingAssetLoading"
+                    @click="submitRenameLinkedAsset(block)"
+                  >
+                    {{ renamingAssetLoading ? '保存中' : '保存' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-btn asset-mini-btn"
+                    :disabled="renamingAssetLoading"
+                    @click="cancelRenameAsset"
+                  >
+                    取消
+                  </button>
+                </div>
+                <input
+                  v-model="block.caption"
+                  class="field"
+                  placeholder="图片说明"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
+                <input
+                  v-model="block.width"
+                  class="field"
+                  placeholder="宽度，例如 100% 或 12cm"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
+                <label class="check-row">
+                  <input
+                    v-model="block.autoFigure"
+                    type="checkbox"
+                    @change="(event) => onFormCursorActivity(event, block)"
+                  />
+                  <span>使用自动编号（图 + 序号）</span>
+                </label>
+                <div class="row">
+                  <select
+                    v-model="block.captionPosition"
+                    class="field small"
+                    @change="(event) => onFormCursorActivity(event, block)"
+                  >
+                    <option value="bottom">题注在下方</option>
+                    <option value="top">题注在上方</option>
+                  </select>
+                  <p class="meta inline-meta">默认使用自动编号；关闭后可在“图片说明”中手动填写编号。</p>
+                </div>
+                <label class="upload-label image-upload">
+                  <span>上传本地图片并缓存（推荐）</span>
+                  <input type="file" accept="image/*" @change="(event) => onImageFileChange(event, block)" />
+                </label>
+                <p class="meta" v-if="uploadingImageBlockId === block.id">图片上传中...</p>
+                <img v-if="imagePreviewUrl(block.path)" :src="imagePreviewUrl(block.path)" alt="图片预览" class="image-preview" />
               </div>
             </template>
 
             <template v-else-if="block.type === 'equation'">
-              <textarea v-model="block.text" class="textarea" rows="3" placeholder="输入公式，例如 sum_(i=1)^n i = n(n+1)/2" />
+              <textarea
+                v-model="block.text"
+                class="textarea"
+                rows="3"
+                placeholder="输入公式，例如 sum_(i=1)^n i = n(n+1)/2"
+                @click="(event) => onFormCursorActivity(event, block)"
+                @keyup="(event) => onFormCursorActivity(event, block)"
+                @input="(event) => onFormCursorActivity(event, block)"
+              />
             </template>
 
             <template v-else-if="block.type === 'table'">
               <div class="column">
-                <input v-model="block.caption" class="field" placeholder="表题，例如 实验结果对比" />
-                <input v-model.number="block.columns" class="field" type="number" min="1" step="1" placeholder="列数" />
-                <textarea v-model="block.headersText" class="textarea" rows="2" placeholder="表头，用 | 分隔，例如 项目|方法A|方法B" />
-                <textarea v-model="block.rowsText" class="textarea" rows="4" placeholder="每行一条记录，列用 | 分隔，例如\n准确率|90|92\n召回率|88|91" />
+                <input
+                  v-model="block.caption"
+                  class="field"
+                  placeholder="表题，例如 实验结果对比"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
+                <input
+                  v-model.number="block.columns"
+                  class="field"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="列数"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
+                <textarea
+                  v-model="block.headersText"
+                  class="textarea"
+                  rows="2"
+                  placeholder="表头，用 | 分隔，例如 项目|方法A|方法B"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
+                <textarea
+                  v-model="block.rowsText"
+                  class="textarea"
+                  rows="4"
+                  placeholder="每行一条记录，列用 | 分隔，例如\n准确率|90|92\n召回率|88|91"
+                  @click="(event) => onFormCursorActivity(event, block)"
+                  @keyup="(event) => onFormCursorActivity(event, block)"
+                  @input="(event) => onFormCursorActivity(event, block)"
+                />
+                <label class="check-row">
+                  <input
+                    v-model="block.autoFigure"
+                    type="checkbox"
+                    @change="(event) => onFormCursorActivity(event, block)"
+                  />
+                  <span>使用自动编号（表 + 序号）</span>
+                </label>
+                <div class="row">
+                  <select
+                    v-model="block.captionPosition"
+                    class="field small"
+                    @change="(event) => onFormCursorActivity(event, block)"
+                  >
+                    <option value="top">题注在上方</option>
+                    <option value="bottom">题注在下方</option>
+                  </select>
+                  <p class="meta inline-meta">默认使用自动编号；关闭后可在“表题”中手动填写编号。</p>
+                </div>
                 <p class="hint">默认生成三线表：上/下线 1.5pt，表头下线 0.75pt。</p>
               </div>
             </template>
           </div>
+          <div
+            v-if="draggingBlockId"
+            class="block-drop-end"
+            :class="{ active: dragInsertIndex === formDoc.blocks.length }"
+            @dragover="onBlockDragOverEnd"
+            @drop="onBlockDropEnd"
+          >
+            拖到此处可移动到末尾
+          </div>
         </div>
 
         <div v-else class="typst-editor">
-          <textarea v-model="typstSource" class="textarea source" rows="30" placeholder="直接粘贴或编辑 Typst 源码..." />
+          <textarea
+            ref="typstEditorRef"
+            v-model="typstSource"
+            class="textarea source"
+            rows="30"
+            placeholder="直接粘贴或编辑 Typst 源码..."
+            @click="onTypstCursorActivity"
+            @keyup="onTypstCursorActivity"
+            @input="onTypstCursorActivity"
+          />
         </div>
       </article>
 
-      <article class="panel preview-panel">
+      <article class="panel preview-panel" :style="{ '--preview-sticky-top': `${previewStickyTop}px` }">
         <div class="preview-header">
           <h2>正文 PDF 实时预览</h2>
-          <button type="button" class="text-btn" :disabled="isRenderingPreview" @click="renderBodyPdfPreview">
-            {{ isRenderingPreview ? '渲染中...' : '立即刷新' }}
-          </button>
+          <div class="preview-header-actions">
+            <div class="mode-switch preview-scale-switch">
+              <button
+                type="button"
+                class="chip"
+                :class="{ active: previewScaleMode === 'width' }"
+                @click="setPreviewScaleMode('width')"
+              >
+                适应宽度
+              </button>
+              <button
+                type="button"
+                class="chip"
+                :class="{ active: previewScaleMode === 'page' }"
+                @click="setPreviewScaleMode('page')"
+              >
+                整页
+              </button>
+            </div>
+            <button type="button" class="text-btn" :disabled="isRenderingPreview" @click="renderBodyPdfPreview">
+              {{ isRenderingPreview ? '渲染中...' : '立即刷新' }}
+            </button>
+          </div>
         </div>
-        <p class="meta">{{ previewStatus }}</p>
-        <iframe v-if="previewPdfUrl" :src="previewPdfUrl" class="preview-frame" title="正文 PDF 预览" />
+
+        <p class="meta">{{ previewStatus }}（定位页：{{ previewLocationPage }} / {{ previewPageCount }}）</p>
+
+        <div v-if="renderedBodyPdfBytes" ref="previewContainerRef" class="preview-scroll" @scroll="onPreviewScroll">
+          <div class="preview-page preview-page-strip" @click="onPreviewPageClick">
+            <canvas ref="previewSingleCanvasRef" class="preview-page-canvas preview-strip-canvas" />
+          </div>
+        </div>
         <div v-else class="preview-empty">暂无可预览的正文 PDF，请检查 Typst 渲染服务状态。</div>
       </article>
     </section>
@@ -613,8 +439,9 @@ onBeforeUnmount(() => {
 
         <div class="actions merge-actions">
           <button type="button" class="text-btn" @click="clearBodyPdf">清空正文 PDF</button>
+          <button type="button" class="text-btn" :disabled="isMerging" @click="exportBodyPdfOnly">仅导出正文 PDF</button>
           <button type="button" class="chip active" :disabled="isMerging" @click="mergeCoverAndBody">
-            {{ isMerging ? '正在合并...' : '一键导出完整 PDF' }}
+            {{ isMerging ? '处理中...' : '一键导出 PDF（有封面则合并）' }}
           </button>
         </div>
 
@@ -622,14 +449,273 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
-    <div v-if="contextMenu.visible && mode === 'form'" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
-      <button type="button" @click="insertFromMenu('paragraph')">插入段落</button>
-      <button type="button" @click="insertFromMenu('heading', { level: 1, text: '一级标题' })">插入一级标题</button>
-      <button type="button" @click="insertFromMenu('heading', { level: 2, text: '二级标题' })">插入二级标题</button>
-      <button type="button" @click="insertFromMenu('heading', { level: 3, text: '三级标题' })">插入三级标题</button>
-      <button type="button" @click="insertFromMenu('image')">插入图片</button>
-      <button type="button" @click="insertFromMenu('equation')">插入公式</button>
-      <button type="button" @click="insertFromMenu('table')">插入三线表</button>
+    <div
+      v-if="contextMenu.visible"
+      ref="contextMenuRef"
+      class="context-menu form-context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @mouseenter="cancelHideInsertSubmenu"
+      @mouseleave="scheduleHideInsertSubmenu"
+      @click.stop
+    >
+      <template v-if="mode === 'form'">
+        <button v-if="contextMenu.canInsertAtCaret" type="button" @click="pasteFromClipboardAtCaret">粘贴到光标处</button>
+
+        <div
+          class="insert-group"
+          @mouseenter="(event) => openInsertSubmenu('after', event)"
+          @mouseleave="scheduleHideInsertSubmenu"
+        >
+          <button type="button" class="insert-group-trigger">在后方插入...</button>
+          <div
+            v-show="activeInsertSubmenu === 'after'"
+            ref="insertSubmenuAfterRef"
+            class="insert-submenu"
+            :style="insertSubmenuStyles.after"
+            @mouseenter="cancelHideInsertSubmenu"
+            @mouseleave="scheduleHideInsertSubmenu"
+          >
+            <button type="button" @click="insertFromMenu('text')">文本模块</button>
+            <button type="button" @click="insertFromMenu('heading', { level: 1, text: '一级标题' })">一级标题</button>
+            <button type="button" @click="insertFromMenu('heading', { level: 2, text: '二级标题' })">二级标题</button>
+            <button type="button" @click="insertFromMenu('heading', { level: 3, text: '三级标题' })">三级标题</button>
+            <button type="button" @click="insertFromMenu('image')">图片（空白卡片）</button>
+            <div
+              class="context-image-item"
+              @mouseenter="(event) => openAssetPreviewSubmenu('after', event)"
+              @mouseleave="scheduleHideAssetPreviewSubmenu"
+            >
+              <button type="button">图片（素材库预览插入）</button>
+              <div
+                v-show="activeAssetPreviewMenu === 'after'"
+                ref="assetPreviewAfterRef"
+                class="context-image-submenu"
+                :style="assetPreviewStyles.after"
+                @mouseenter="cancelHideAssetPreviewSubmenu"
+                @mouseleave="scheduleHideAssetPreviewSubmenu"
+              >
+                <div v-if="assetLibrary.length" class="context-image-grid">
+                  <button
+                    v-for="asset in assetLibrary.slice(0, 30)"
+                    :key="`after-${asset.path}`"
+                    type="button"
+                    class="context-image-option"
+                    @click.stop="insertImageFromContextAsset(asset)"
+                  >
+                    <img :src="asset.url" :alt="asset.name" class="context-image-thumb" />
+                    <span class="context-image-name">{{ asset.name }}</span>
+                  </button>
+                </div>
+                <p v-else class="context-image-empty">素材库为空，请先上传图片。</p>
+              </div>
+            </div>
+            <button type="button" @click="insertFromMenu('equation')">公式</button>
+            <button type="button" @click="insertFromMenu('table')">三线表</button>
+          </div>
+        </div>
+
+        <div
+          class="insert-group"
+          v-if="contextMenu.canInsertAtCaret"
+          @mouseenter="(event) => openInsertSubmenu('caret', event)"
+          @mouseleave="scheduleHideInsertSubmenu"
+        >
+          <button type="button" class="insert-group-trigger">在光标处插入...</button>
+          <div
+            v-show="activeInsertSubmenu === 'caret'"
+            ref="insertSubmenuCaretRef"
+            class="insert-submenu"
+            :style="insertSubmenuStyles.caret"
+            @mouseenter="cancelHideInsertSubmenu"
+            @mouseleave="scheduleHideInsertSubmenu"
+          >
+            <button type="button" @click="insertFromMenuAtCaret('text')">文本模块</button>
+            <button type="button" @click="insertFromMenuAtCaret('heading', { level: 1, text: '一级标题' })">一级标题</button>
+            <button type="button" @click="insertFromMenuAtCaret('heading', { level: 2, text: '二级标题' })">二级标题</button>
+            <button type="button" @click="insertFromMenuAtCaret('heading', { level: 3, text: '三级标题' })">三级标题</button>
+            <button type="button" @click="insertFromMenuAtCaret('image')">图片（空白卡片）</button>
+            <div
+              class="context-image-item"
+              @mouseenter="(event) => openAssetPreviewSubmenu('caret', event)"
+              @mouseleave="scheduleHideAssetPreviewSubmenu"
+            >
+              <button type="button">图片（素材库预览插入）</button>
+              <div
+                v-show="activeAssetPreviewMenu === 'caret'"
+                ref="assetPreviewCaretRef"
+                class="context-image-submenu"
+                :style="assetPreviewStyles.caret"
+                @mouseenter="cancelHideAssetPreviewSubmenu"
+                @mouseleave="scheduleHideAssetPreviewSubmenu"
+              >
+                <div v-if="assetLibrary.length" class="context-image-grid">
+                  <button
+                    v-for="asset in assetLibrary.slice(0, 30)"
+                    :key="`caret-${asset.path}`"
+                    type="button"
+                    class="context-image-option"
+                    @click.stop="insertImageFromContextAsset(asset)"
+                  >
+                    <img :src="asset.url" :alt="asset.name" class="context-image-thumb" />
+                    <span class="context-image-name">{{ asset.name }}</span>
+                  </button>
+                </div>
+                <p v-else class="context-image-empty">素材库为空，请先上传图片。</p>
+              </div>
+            </div>
+            <button type="button" @click="insertFromMenuAtCaret('equation')">公式</button>
+            <button type="button" @click="insertFromMenuAtCaret('table')">三线表</button>
+          </div>
+        </div>
+
+        <div
+          class="insert-group"
+          v-if="contextMenu.canInsertAtCaret && contextMenu.selectedText && contextMenu.selectedText.trim().length > 0"
+          @mouseenter="(event) => openInsertSubmenu('selection-heading', event)"
+          @mouseleave="scheduleHideInsertSubmenu"
+        >
+          <button type="button" class="insert-group-trigger">选中文本设为标题...</button>
+          <div
+            v-show="activeInsertSubmenu === 'selection-heading'"
+            ref="insertSubmenuSelectionRef"
+            class="insert-submenu"
+            :style="insertSubmenuStyles.selection"
+            @mouseenter="cancelHideInsertSubmenu"
+            @mouseleave="scheduleHideInsertSubmenu"
+          >
+            <button type="button" @click="convertSelectionToHeading(1)">设为一级标题</button>
+            <button type="button" @click="convertSelectionToHeading(2)">设为二级标题</button>
+            <button type="button" @click="convertSelectionToHeading(3)">设为三级标题</button>
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="mode === 'typst'">
+        <div
+          class="insert-group"
+          @mouseenter="(event) => openInsertSubmenu('typst-after', event)"
+          @mouseleave="scheduleHideInsertSubmenu"
+        >
+          <button type="button" class="insert-group-trigger">在后方插入...</button>
+          <div
+            v-show="activeInsertSubmenu === 'typst-after'"
+            ref="insertSubmenuTypstAfterRef"
+            class="insert-submenu"
+            :style="insertSubmenuStyles.typstAfter"
+            @mouseenter="cancelHideInsertSubmenu"
+            @mouseleave="scheduleHideInsertSubmenu"
+          >
+            <button type="button" @click="insertTypstFromMenu('text', { text: '新文本模块' }, false)">文本模块</button>
+            <button type="button" @click="insertTypstFromMenu('heading', { level: 1, text: '一级标题' }, false)">一级标题</button>
+            <button type="button" @click="insertTypstFromMenu('heading', { level: 2, text: '二级标题' }, false)">二级标题</button>
+            <button type="button" @click="insertTypstFromMenu('heading', { level: 3, text: '三级标题' }, false)">三级标题</button>
+            <button type="button" @click="insertTypstFromMenu('image', {}, false)">图片（空白卡片）</button>
+            <div
+              class="context-image-item"
+              @mouseenter="(event) => openAssetPreviewSubmenu('typst-after', event)"
+              @mouseleave="scheduleHideAssetPreviewSubmenu"
+            >
+              <button type="button">图片（素材库预览插入）</button>
+              <div
+                v-show="activeAssetPreviewMenu === 'typst-after'"
+                ref="assetPreviewTypstAfterRef"
+                class="context-image-submenu"
+                :style="assetPreviewStyles.typstAfter"
+                @mouseenter="cancelHideAssetPreviewSubmenu"
+                @mouseleave="scheduleHideAssetPreviewSubmenu"
+              >
+                <div v-if="assetLibrary.length" class="context-image-grid">
+                  <button
+                    v-for="asset in assetLibrary.slice(0, 30)"
+                    :key="`typst-after-${asset.path}`"
+                    type="button"
+                    class="context-image-option"
+                    @click.stop="insertTypstImageFromAsset(asset, false)"
+                  >
+                    <img :src="asset.url" :alt="asset.name" class="context-image-thumb" />
+                    <span class="context-image-name">{{ asset.name }}</span>
+                  </button>
+                </div>
+                <p v-else class="context-image-empty">素材库为空，请先上传图片。</p>
+              </div>
+            </div>
+            <button type="button" @click="insertTypstFromMenu('equation', {}, false)">公式</button>
+            <button type="button" @click="insertTypstFromMenu('table', {}, false)">三线表</button>
+          </div>
+        </div>
+
+        <div
+          class="insert-group"
+          @mouseenter="(event) => openInsertSubmenu('typst-caret', event)"
+          @mouseleave="scheduleHideInsertSubmenu"
+        >
+          <button type="button" class="insert-group-trigger">在光标处插入...</button>
+          <div
+            v-show="activeInsertSubmenu === 'typst-caret'"
+            ref="insertSubmenuTypstCaretRef"
+            class="insert-submenu"
+            :style="insertSubmenuStyles.typstCaret"
+            @mouseenter="cancelHideInsertSubmenu"
+            @mouseleave="scheduleHideInsertSubmenu"
+          >
+            <button type="button" @click="insertTypstFromMenu('text', { text: '新文本模块' }, true)">文本模块</button>
+            <button type="button" @click="insertTypstFromMenu('heading', { level: 1, text: '一级标题' }, true)">一级标题</button>
+            <button type="button" @click="insertTypstFromMenu('heading', { level: 2, text: '二级标题' }, true)">二级标题</button>
+            <button type="button" @click="insertTypstFromMenu('heading', { level: 3, text: '三级标题' }, true)">三级标题</button>
+            <button type="button" @click="insertTypstFromMenu('image', {}, true)">图片（空白卡片）</button>
+            <div
+              class="context-image-item"
+              @mouseenter="(event) => openAssetPreviewSubmenu('typst-caret', event)"
+              @mouseleave="scheduleHideAssetPreviewSubmenu"
+            >
+              <button type="button">图片（素材库预览插入）</button>
+              <div
+                v-show="activeAssetPreviewMenu === 'typst-caret'"
+                ref="assetPreviewTypstCaretRef"
+                class="context-image-submenu"
+                :style="assetPreviewStyles.typstCaret"
+                @mouseenter="cancelHideAssetPreviewSubmenu"
+                @mouseleave="scheduleHideAssetPreviewSubmenu"
+              >
+                <div v-if="assetLibrary.length" class="context-image-grid">
+                  <button
+                    v-for="asset in assetLibrary.slice(0, 30)"
+                    :key="`typst-caret-${asset.path}`"
+                    type="button"
+                    class="context-image-option"
+                    @click.stop="insertTypstImageFromAsset(asset, true)"
+                  >
+                    <img :src="asset.url" :alt="asset.name" class="context-image-thumb" />
+                    <span class="context-image-name">{{ asset.name }}</span>
+                  </button>
+                </div>
+                <p v-else class="context-image-empty">素材库为空，请先上传图片。</p>
+              </div>
+            </div>
+            <button type="button" @click="insertTypstFromMenu('equation', {}, true)">公式</button>
+            <button type="button" @click="insertTypstFromMenu('table', {}, true)">三线表</button>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div
+      v-if="assetContextMenu.visible"
+      class="context-menu asset-context-menu"
+      :style="{ left: `${assetContextMenu.x}px`, top: `${assetContextMenu.y}px` }"
+      @click.stop
+    >
+      <button type="button" @click="onAssetMenuInsertImageBlock">插入图片块</button>
+      <button type="button" @click="onAssetMenuCopyPath">复制路径</button>
+      <button type="button" @click="onAssetMenuRename">重命名</button>
+      <button type="button" class="danger" @click="onAssetMenuDelete">删除素材</button>
     </div>
   </main>
 </template>
+
+
+
+
+
+
+
