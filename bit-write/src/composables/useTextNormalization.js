@@ -95,7 +95,7 @@ export function useTextNormalization({
     for (const row of collectTextsForNormalization()) {
       row.block[row.key] = normalizeRichTextInput(row.value)
     }
-    parseNotice.value = '已完成文本规范化（清理异常字符并统一兼容字符）。'
+    parseNotice.value = '已完成文本规范化，异常字符已按兼容规则修复。'
   }
 
   function enforceStrictFontUniformText(input) {
@@ -112,14 +112,14 @@ export function useTextNormalization({
   function applyStrictFontUniformFix() {
     if (mode.value === 'typst') {
       typstSource.value = enforceStrictFontUniformText(typstSource.value)
-      parseNotice.value = '已执行强制统一字体处理（异常字符已替换为 □）。'
+      parseNotice.value = '已执行强制统一字体处理，异常字符已替换为 □。'
       return
     }
 
     for (const row of collectTextsForNormalization()) {
       row.block[row.key] = enforceStrictFontUniformText(row.value)
     }
-    parseNotice.value = '已执行强制统一字体处理（异常字符已替换为 □）。'
+    parseNotice.value = '已执行强制统一字体处理，异常字符已替换为 □。'
   }
 
   return {
@@ -137,4 +137,3 @@ export function useTextNormalization({
     isTemplateSafeChar,
   }
 }
-

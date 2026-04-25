@@ -254,8 +254,8 @@ export function useBlockInsertActions({
         ? '已在光标处粘贴并拆分为独立文本卡片。'
         : '已在光标处粘贴。'
     imageUploadStatus.value = hasText
-      ? `已粘贴文本并缓存图片：${insertedImageNames.join('，')}`
-      : `已缓存并插入图片：${insertedImageNames.join('，')}`
+      ? `已粘贴文本并缓存图片：${insertedImageNames.join('、')}`
+      : `已缓存并插入图片：${insertedImageNames.join('、')}`
 
     void nextTick(() => {
       const blockEl = blockRefMap.get(block.id)

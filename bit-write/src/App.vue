@@ -28,11 +28,11 @@
 
     <section ref="assetsPanelRef" class="panel assets-panel" :class="{ collapsed: assetPanelCollapsed }">
       <div class="assets-header">
-        <h2>&#39033;&#30446;&#32032;&#26448;&#24211;</h2>
+        <h2>项目素材库</h2>
         <div class="assets-actions">
           <button type="button" class="text-btn asset-toggle-btn" @click="toggleAssetPanel">{{ assetPanelCollapsed ? '展开素材库' : '收起素材库' }}</button>
-          <input v-model="assetLibraryKeyword" class="field assets-search" placeholder="&#25628;&#32034;&#32032;&#26448;&#21517;&#25110;&#36335;&#24452;" :disabled="assetPanelCollapsed" />
-          <button type="button" class="text-btn" @click="triggerAssetUpload" :disabled="assetPanelCollapsed">&#19978;&#20256;&#32032;&#26448;</button>
+          <input v-model="assetLibraryKeyword" class="field assets-search" placeholder="搜索素材名或路径" :disabled="assetPanelCollapsed" />
+          <button type="button" class="text-btn" @click="triggerAssetUpload" :disabled="assetPanelCollapsed">上传素材</button>
           <button type="button" class="text-btn" :disabled="assetLibraryLoading || assetPanelCollapsed" @click="loadAssetLibrary">
             {{ assetLibraryLoading ? '加载中...' : '刷新素材库' }}
           </button>
@@ -111,7 +111,7 @@
             <p class="asset-hint">右键可操作</p>
           </article>
         </div>
-        <div v-else class="preview-empty assets-empty" @click="triggerAssetUpload">&#26242;&#26080;&#53305;&#37197;&#32032;&#26448;&#65292;&#28857;&#20987;&#27492;&#22788;&#21487;&#30452;&#25509;&#19978;&#20256;&#24182;&#32531;&#23384;&#12290;</div>
+        <div v-else class="preview-empty assets-empty" @click="triggerAssetUpload">暂无匹配素材，点击此处可直接上传并缓存。</div>
       </div>
     </section>
 

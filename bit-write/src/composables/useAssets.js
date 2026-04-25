@@ -29,9 +29,7 @@ export function useAssets({
     assetLibraryDirectoryLoading.value = true
     try {
       const response = await apiFetch('/api/assets/config')
-      if (!response.ok) {
-        throw new Error((await response.text()) || `HTTP ${response.status}`)
-      }
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
       const result = await response.json()
       assetLibraryDirectory.value = String(result.assetDirectory || '')
       assetLibraryDirectoryDraft.value = assetLibraryDirectory.value
@@ -104,10 +102,9 @@ export function useAssets({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: currentPath, name: nextName }),
       })
-
       if (!response.ok) {
         const text = await response.text()
-        throw new Error(text || ('HTTP ' + response.status))
+        throw new Error(text || `HTTP ${response.status}`)
       }
 
       const result = await response.json()
@@ -169,9 +166,7 @@ export function useAssets({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assetDirectory: candidate }),
       })
-      if (!response.ok) {
-        throw new Error((await response.text()) || `HTTP ${response.status}`)
-      }
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
       const result = await response.json()
       assetLibraryDirectory.value = String(result.assetDirectory || candidate)
       assetLibraryDirectoryDraft.value = assetLibraryDirectory.value
@@ -201,12 +196,8 @@ export function useAssets({
   async function pickAssetDirectory() {
     assetLibraryDirectorySaving.value = true
     try {
-      const response = await apiFetch('/api/assets/pick-directory', {
-        method: 'POST',
-      })
-      if (!response.ok) {
-        throw new Error((await response.text()) || `HTTP ${response.status}`)
-      }
+      const response = await apiFetch('/api/assets/pick-directory', { method: 'POST' })
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
       const result = await response.json()
       const selected = String(result.assetDirectory || '')
       if (!selected) return
@@ -269,7 +260,7 @@ export function useAssets({
         if (response.status === 404 && text.includes('Cannot GET /api/assets/list')) {
           throw new Error('未检测到素材库接口，请启动转换服务：npm run dev:converter')
         }
-        throw new Error(text || ('HTTP ' + response.status))
+        throw new Error(text || `HTTP ${response.status}`)
       }
       const result = await response.json()
       assetLibrary.value = Array.isArray(result.items) ? result.items : []
@@ -323,18 +314,16 @@ export function useAssets({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: asset.path }),
       })
-
       if (!response.ok) {
         const text = await response.text()
         if (response.status === 404 && text.includes('Cannot POST /api/assets/delete')) {
           throw new Error('未检测到素材删除接口，请重启转换服务：npm run dev:converter')
         }
-        throw new Error(text || ('HTTP ' + response.status))
+        throw new Error(text || `HTTP ${response.status}`)
       }
 
       const oldPath = String(asset.path || '')
       const oldName = String(asset.name || '')
-
       for (const block of formDoc.blocks) {
         if (block.type !== 'image') continue
         const rawPath = String(block.path || '').trim()
@@ -421,9 +410,7 @@ export function useAssets({
       method: 'POST',
       body: formData,
     })
-    if (!response.ok) {
-      throw new Error((await response.text()) || `HTTP ${response.status}`)
-    }
+    if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
     return await response.json()
   }
 

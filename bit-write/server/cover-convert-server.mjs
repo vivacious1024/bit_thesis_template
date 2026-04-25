@@ -33,6 +33,23 @@ const typstBinaryCandidatePaths = buildTypstBinaryCandidatePaths(process.env.BIT
 const assetConfigPath = path.join(appCacheDir, 'asset-library.json')
 let imageCacheDir = defaultImageCacheDir
 
+const COMMON_CHAR_FIX_REPLACEMENTS = Object.freeze({
+  '⻠': '饣',
+  '⻌': '辶',
+  '⻍': '辶',
+  '⻖': '阝',
+  '⺁': '厂',
+  '⺮': '竹',
+  '⺾': '艹',
+  '‘': "'",
+  '’': "'",
+  '“': '"',
+  '”': '"',
+  '—': '-',
+  '–': '-',
+  '…': '...',
+})
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
@@ -210,7 +227,7 @@ app.post('/api/assets/rename', async (req, res) => {
 
   const incomingExt = path.extname(targetNameRaw).toLowerCase()
   if (incomingExt && incomingExt !== oldExt) {
-    res.status(400).send('重命名不允许修改文件扩展名。')
+    res.status(400).send('重命名时不允许修改文件扩展名。')
     return
   }
 
@@ -238,7 +255,7 @@ app.post('/api/assets/rename', async (req, res) => {
       res.status(409).send('目标文件名已存在，请换一个名称。')
       return
     } catch {
-      // 目标不存在，继续重命名
+      // continue
     }
 
     await fs.rename(oldFullPath, newFullPath)
@@ -308,13 +325,13 @@ app.post('/api/body/render-typst', async (req, res) => {
     try {
       await fs.copyFile(cslSrc, path.join(workDir, 'china-national-standard-gb-t-7714-2015-numeric.csl'))
     } catch {
-      // 可选文件，不阻塞渲染
+      // optional resource
     }
 
     try {
       await fs.cp(imageCacheDir, path.join(workDir, 'assets-cache'), { recursive: true })
     } catch {
-      // 素材目录不存在时忽略
+      // ignore asset copy failures
     }
 
     const wrapped = `#import "./template_for_bit_graduate_project.typ": project, bit_three_line_table\n\n#show: project.with(\n  title: "${escapeTypstString(
@@ -324,10 +341,7 @@ app.post('/api/body/render-typst', async (req, res) => {
     )}",\n)\n\n${body}\n`
 
     await fs.writeFile(mainTypPath, wrapped)
-    const typstBinaryPath = await resolveExistingResourcePath(typstBinaryCandidatePaths, 'Typst 可执行文件')
-    await execFileAsync(typstBinaryPath, ['compile', mainTypPath, outPdfPath, '--root', workDir], {
-      timeout: 90_000,
-    })
+    await compileWithTypst(mainTypPath, outPdfPath, workDir)
 
     const outputBytes = await fs.readFile(outPdfPath)
     res.setHeader('Content-Type', 'application/pdf')
@@ -335,15 +349,11 @@ app.post('/api/body/render-typst', async (req, res) => {
   } catch (error) {
     const message = String(error?.message || '')
     if (message.includes('ENOENT')) {
-      res.status(500).send('未检测到 typst 命令。请先安装 Typst 并加入 PATH。')
+      res.status(500).send('未检测到 Typst 可执行文件，请检查打包资源或本机环境。')
       return
     }
     if (message.includes('EPERM')) {
-      res
-        .status(500)
-        .send(
-          '正文渲染失败：无法启动 typst（EPERM）。请检查 typst 可执行权限、安装目录权限，或将 typst.exe 放到本机本地目录并加入 PATH。',
-        )
+      res.status(500).send('正文渲染失败：无法启动 Typst，请检查可执行权限。')
       return
     }
     res.status(500).send(`正文渲染失败：${message}`)
@@ -394,19 +404,77 @@ function buildTypstBinaryCandidatePaths(explicitPath) {
   candidates.push(path.join(appRoot, 'vendor', 'typst', 'win-x64', 'typst.exe'))
   candidates.push(path.join(workspaceRoot, 'bit-write', 'vendor', 'typst', 'win-x64', 'typst.exe'))
   candidates.push(path.join(workspaceRoot, 'vendor', 'typst', 'win-x64', 'typst.exe'))
+  candidates.push('typst')
   return candidates
 }
 
 async function resolveExistingResourcePath(candidates, label) {
   for (const candidate of candidates) {
+    if (candidate === 'typst') return candidate
     try {
       await fs.access(candidate)
       return candidate
     } catch {
-      // try next
+      // try next candidate
     }
   }
   throw new Error(`${label}不存在，请检查打包资源是否完整。`)
+}
+
+async function compileWithTypst(mainTypPath, outPdfPath, workDir) {
+  const candidates = await resolveTypstCommandCandidates()
+  const errors = []
+
+  for (const candidate of candidates) {
+    try {
+      await runTypstCommand(candidate, ['compile', mainTypPath, outPdfPath, '--root', workDir])
+      return
+    } catch (error) {
+      errors.push(`${candidate}: ${String(error?.message || error)}`)
+    }
+  }
+
+  throw new Error(errors.join(' | ') || '无法启动 Typst。')
+}
+
+async function resolveTypstCommandCandidates() {
+  const resolved = []
+  for (const candidate of typstBinaryCandidatePaths) {
+    if (candidate === 'typst') {
+      resolved.push(candidate)
+      continue
+    }
+    try {
+      await fs.access(candidate)
+      resolved.push(candidate)
+    } catch {
+      // ignore
+    }
+  }
+  if (!resolved.includes('typst')) resolved.push('typst')
+  return resolved
+}
+
+async function runTypstCommand(command, args) {
+  try {
+    await execFileAsync(command, args, { timeout: 90_000, windowsHide: true })
+    return
+  } catch (error) {
+    if (isWindows() && String(error?.message || '').includes('EPERM') && command !== 'typst') {
+      const psArgs = [buildPowerShellTypstCommand(command, args)]
+      await execFileAsync('powershell.exe', ['-NoProfile', '-Command', ...psArgs], {
+        timeout: 90_000,
+        windowsHide: true,
+      })
+      return
+    }
+    throw error
+  }
+}
+
+function buildPowerShellTypstCommand(command, args) {
+  const escaped = [command, ...args].map((item) => `'${String(item).replaceAll("'", "''")}'`)
+  return `& ${escaped[0]} ${escaped.slice(1).join(' ')}`
 }
 
 async function ensureAssetDirectoryReady() {
@@ -424,8 +492,7 @@ async function setAssetDirectory(inputPath) {
 function normalizeAssetDirectoryInput(inputPath) {
   const raw = String(inputPath || '').trim().replaceAll('"', '')
   if (!raw) throw new Error('素材库目录不能为空。')
-  const resolved = path.resolve(raw)
-  return resolved
+  return path.resolve(raw)
 }
 
 async function loadAssetConfig() {
@@ -491,10 +558,7 @@ function isImageExt(ext) {
 
 function normalizeImageExt(rawExt, mimeType) {
   const ext = String(rawExt || '').toLowerCase()
-  if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif' || ext === '.webp' || ext === '.svg') {
-    return ext
-  }
-
+  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext)) return ext
   if (mimeType === 'image/png') return '.png'
   if (mimeType === 'image/jpeg') return '.jpg'
   if (mimeType === 'image/gif') return '.gif'
@@ -535,63 +599,6 @@ function isWindows() {
   return process.platform === 'win32'
 }
 
-const COMMON_CHAR_FIX_REPLACEMENTS = Object.freeze({
-  '⻔': '门',
-  '⻆': '角',
-  '⻛': '风',
-  '⻓': '长',
-  '⻢': '马',
-  '⻋': '车',
-  '⻅': '见',
-  '⻝': '食',
-  '⻌': '辶',
-  '⻍': '辶',
-  '⺀': '冫',
-  '⺁': '厂',
-  '⺄': '乙',
-  '⺈': '刀',
-  '⺋': '卩',
-  '⺌': '小',
-  '⺕': '彐',
-  '⺧': '牛',
-  '⺪': '阝',
-  '⺮': '竹',
-  '⺼': '月',
-  '⻂': '衣',
-  '⻎': '辶',
-  '⻏': '阝',
-  '⻐': '钅',
-  '⻑': '长',
-  '⻒': '尢',
-  '⻕': '阝',
-  '⻖': '阝',
-  '⻗': '雨',
-  '⻘': '青',
-  '⻙': '韦',
-  '⻚': '页',
-  '⻜': '飞',
-  '⻟': '食',
-  '⻠': '饣',
-  '⻣': '骨',
-  '⻤': '鬼',
-  '⻥': '鱼',
-  '⻦': '鸟',
-  '⻧': '卤',
-  '⻨': '麦',
-  '⻩': '黄',
-  '⻪': '黾',
-  '⻫': '齐',
-  '⻬': '齐',
-  '⻭': '齿',
-  '⻮': '齿',
-  '︰': ':',
-  '﹣': '-',
-  '－': '-',
-  '﹢': '+',
-  '／': '/',
-  '＼': '\\',
-})
-
 app.use((error, _req, res, _next) => {
   if (error?.type === 'entity.parse.failed') {
     res.status(400).send('请求 JSON 格式错误，请检查请求体。')
@@ -603,8 +610,6 @@ app.use((error, _req, res, _next) => {
 await loadAssetConfig()
 
 app.listen(port, () => {
-  // eslint-disable-next-line no-console
   console.log(`本地服务已启动：http://localhost:${port}`)
-  // eslint-disable-next-line no-console
   console.log(`素材库目录：${imageCacheDir}`)
 })

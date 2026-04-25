@@ -3,7 +3,7 @@
     "description": "Offline Typst writing desktop app",
     "author": "bit-write",
     "private": true,
-    "version": "0.1.0",
+    "version": "0.1.1",
     "main": "electron/main.cjs",
     "type": "module",
     "scripts": {
@@ -41,12 +41,7 @@
             "dist/**/*",
             "electron/**/*",
             "server/**/*",
-            "src/**/*",
-            "public/**/*",
             "package.json"
-        ],
-        "asarUnpack": [
-            "server/**/*"
         ],
         "extraResources": [
             {
@@ -62,6 +57,10 @@
                 "to": "icon.png"
             },
             {
+                "from": "build/icons/icon.ico",
+                "to": "icon.ico"
+            },
+            {
                 "from": "vendor/typst",
                 "to": "typst"
             }
@@ -69,7 +68,6 @@
         "directories": {
             "output": "dist-electron"
         },
-        "afterPack": "electron-builder-hooks.cjs",
         "npmRebuild": false,
         "electronDist": "node_modules/electron/dist",
         "win": {

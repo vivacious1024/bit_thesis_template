@@ -61,7 +61,7 @@ export function usePreviewRender({
         body: JSON.stringify({
           body: source,
           title: thesisTitle.value.trim(),
-          author: 'bit-thesis 用户',
+          author: 'bit-write 用户',
           date: '',
         }),
       })

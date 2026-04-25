@@ -9,7 +9,7 @@ export function useBlockOps({
   getFormBuildResult,
 }) {
   function buildFormTypstResult() {
-    const lines = ['// 由 bit-thesis 编辑器自动生成', '']
+    const lines = ['// 由 bit-write 编辑器自动生成', '']
     const spans = []
 
     for (const block of formDoc.blocks) {
@@ -66,6 +66,7 @@ export function useBlockOps({
       parseNotice.value = '当前卡片已经是 Typst 卡片。'
       return
     }
+
     const snippet = blockToTypstSnippet(block)
     formDoc.blocks.splice(index, 1, {
       id: crypto.randomUUID(),

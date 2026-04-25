@@ -20,7 +20,7 @@ export function useExportActions({
 
     if (!file.name.toLowerCase().endsWith('.pdf')) {
       coverPdfBytes.value = null
-      coverStatus.value = '封面格式不支持，请上传 .pdf'
+      coverStatus.value = '封面格式不支持，请上传 .pdf 文件。'
       return
     }
 
@@ -56,7 +56,7 @@ export function useExportActions({
 
     if (!coverPdfBytes.value) {
       downloadBytes(bodyBytes, '论文正文.pdf')
-      mergeStatus.value = '未上传封面，已直接导出正文 PDF：论文正文.pdf'
+      mergeStatus.value = '未上传封面，已直接导出正文 PDF。'
       return
     }
 
@@ -76,7 +76,7 @@ export function useExportActions({
 
       const bytes = await mergedDoc.save()
       downloadBytes(bytes, '论文完整版.pdf')
-      mergeStatus.value = '合并完成，已导出：论文完整版.pdf'
+      mergeStatus.value = '合并完成，已导出论文完整版.pdf。'
     } catch (error) {
       mergeStatus.value = `合并失败：${error.message}`
     } finally {
@@ -91,7 +91,7 @@ export function useExportActions({
       return
     }
     downloadBytes(bodyBytes, '论文正文.pdf')
-    mergeStatus.value = '已导出正文 PDF：论文正文.pdf'
+    mergeStatus.value = '已导出正文 PDF。'
   }
 
   function downloadBytes(bytes, fileName) {
@@ -116,13 +116,9 @@ export function useExportActions({
   }
 
   function copyPdfBytes(bytes) {
-    if (bytes instanceof Uint8Array) {
-      return new Uint8Array(bytes)
-    }
-    if (bytes instanceof ArrayBuffer) {
-      return bytes.slice(0)
-    }
-    throw new Error('PDF 数据类型不正确')
+    if (bytes instanceof Uint8Array) return new Uint8Array(bytes)
+    if (bytes instanceof ArrayBuffer) return bytes.slice(0)
+    throw new Error('PDF 数据类型不正确。')
   }
 
   function clearCover() {

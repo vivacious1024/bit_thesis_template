@@ -1,0 +1,12 @@
+bit-thesis/
+
+# Node / frontend outputs
+node_modules/
+dist/
+dist-electron/
+.cache/
+
+# Local editor / OS files
+.DS_Store
+.idea/
+.vscode/
